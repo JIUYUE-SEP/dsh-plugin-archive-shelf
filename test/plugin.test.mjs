@@ -63,11 +63,12 @@ check('browser half declares its client services',
   JSON.stringify(bundle.inject) === JSON.stringify(['slots', 'locale', 'sessions']), JSON.stringify(bundle.inject))
 
 let captured
-const clientContext = (onRegister, sessions) => ({
+const clientContext = (onRegister, sessions, services) => ({
   effect: (callback) => callback(),
   locale: { register: () => () => {}, bind: (ns) => (key) => `${ns}:${key}` },
   slots: { inject: (name, callback) => callback(), register: onRegister },
   sessions: sessions ?? { refresh: async () => {} },
+  get: (name) => (services === undefined ? undefined : services[name]),
 })
 bundle.apply(clientContext((options, component) => { captured = { options, component } }))
 check('registers one settings section', captured !== undefined && captured.options.name === 'settings.section')
@@ -245,9 +246,9 @@ check('a startup sweep reports what it deleted', notices.some(text => String(tex
 // --- dropping an archive record is gated on the browser's own session list ----
 const coldRow = { id: 'c', title: 'cold', workspace: '', cwd: '/tmp', createdAt: 3, live: false, running: false, pending: false, onDisk: true, sizeBytes: 3 }
 const listStub = (byId) => ({ refresh: async () => {}, list: { getSnapshot: () => ({ byId }) } })
-const mounted = (sessions) => {
+const mounted = (sessions, services) => {
   let component
-  bundle.apply(clientContext((_options, value) => { component = value }, sessions))
+  bundle.apply(clientContext((_options, value) => { component = value }, sessions, services))
   return component
 }
 /** Render, run the pending effects, and return the settled tree. */
@@ -324,6 +325,41 @@ check('the layer ships inside the package', Array.isArray(manifest.files) && man
   JSON.stringify(manifest.files))
 check('the client half still declares its platform', manifest.dsh?.client?.platform === 'web',
   JSON.stringify(manifest.dsh?.client))
+
+
+// --- restoring hands the product's own projection the new archive set ---------
+const restorePayload = (archivedSessionIds) => ({
+  ok: true, rows: [coldRow], dangling: [], canRelease: false, pending: [], archivedSessionIds,
+})
+const archiveCalls = []
+const workspacesStub = {
+  archiveSession: async (id) => { archiveCalls.push(id); },
+}
+const clickRestore = async (component, rowId) => {
+  const tree = await settle(component)
+  buttonOf(findRow(tree, rowId), 'restore').props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+}
+
+archiveCalls.length = 0
+payload = restorePayload(['session-still-archived'])
+await clickRestore(mounted(listStub({}), { workspaces: workspacesStub }), 'c')
+check('a restore hands the product projection the complete new archive set',
+  archiveCalls.length === 1 && archiveCalls[0] === 'session-still-archived', JSON.stringify(archiveCalls))
+
+archiveCalls.length = 0
+payload = restorePayload([])
+await clickRestore(mounted(listStub({}), { workspaces: workspacesStub }), 'c')
+check('restoring the last archived session has no anchor and is reported honestly',
+  archiveCalls.length === 0, JSON.stringify(archiveCalls))
+
+requests.length = 0
+payload = restorePayload(['session-still-archived'])
+await clickRestore(mounted(listStub({})), 'c')
+check('a missing workspace service never breaks the restore',
+  requests.some(body => body.action === 'unarchive'), JSON.stringify(requests))
 
 // --- host surface for the new actions ---------------------------------------
 const hostSource = read('lib/index.js')

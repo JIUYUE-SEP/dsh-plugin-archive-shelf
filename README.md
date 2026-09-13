@@ -17,7 +17,10 @@ Settings → **Archive Shelf** (below *Agent presets*):
 
 - every archived session with its **title**, workspace, directory, archive time and size on disk;
 - **Restore** — removes the session from the archive set; it reappears in the sidebar
-  **at its original position**, because archiving never touched its workspace slot;
+  **at its original position**, because archiving never touched its workspace slot. The
+  plugin also hands the new set to the product's own UI state, so no page refresh is
+  needed — except when that was the **last** archived session (no anchor left to sync
+  with), where the sidebar may need one refresh;
 - **Delete permanently** — behind a confirmation dialog, removes the session's log
   directory, its projection cache, and its workspace accounting. Irreversible;
 - **Queue deletion / Cancel queue** — for a session that cannot be deleted right now
