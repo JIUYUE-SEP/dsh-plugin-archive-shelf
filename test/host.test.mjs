@@ -349,7 +349,9 @@ const releasable = await boot('full', {
 const releasableList = (await releasable.call({ action: 'list' })).json
 check(releasableList.canRelease === true, 'the release capability is reported to the client')
 check((await releasable.call({ action: 'release', sessionId: runningId })).json.code === 'running', 'release refuses a running session')
-check((await releasable.call({ action: 'release', sessionId: 'session-9999-none' })).json.code === 'notlive', 'release reports an id with no live agent')
+check((await releasable.call({ action: 'release', sessionId: 'session-not-archived' })).json.error === 'only archived sessions can be released here',
+  'release refuses a session this shelf does not own')
+check((await releasable.call({ action: 'release', sessionId: orphanId })).json.code === 'notlive', 'release reports an archived id with no live agent')
 const released = await releasable.call({ action: 'release', sessionId: residentId })
 check(released.json.ok === true && releasable.releasedIds.includes(residentId), 'release unloads the resident session', JSON.stringify(released.json))
 const releasedDelete = await releasable.call({ action: 'delete', sessionId: residentId, confirm: true })
