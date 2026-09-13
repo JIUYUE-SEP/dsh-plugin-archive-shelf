@@ -122,7 +122,7 @@ dsh plugin --profile web remove dsh-plugin-archive-shelf   # 同时从 dsh.profi
 以及宿主补丁提供的 `agents.release(id)`。升级 DSH 之后，花一分钟走一遍：
 
 ```sh
-cd /path/to/dsh-plugin-archive-shelf && npm test   # 客户端 32 项 + 宿主 98 项：先看上游改动有没有撞坏契约
+cd /path/to/dsh-plugin-archive-shelf && npm test   # 两套件：客户端契约/渲染 + 宿主行为（会打印各项数）
 ```
 
 1. 重启后打开 **设置 → 归档架**：列表能出、徽标（运行中 / 已载入 / 已排队）正确、没有报错条；
@@ -182,7 +182,7 @@ npm test        # 零依赖；两个套件：契约/渲染 + 宿主行为
   以及每个按钮真正发出的那个请求；
 - `test/host.test.mjs` 用假 Cordis 上下文 + 真 loopback HTTP 服务驱动真的 `apply()`，
   在临时目录里真删真写：路径逃逸、超大请求体、运行中/常驻拒绝、队列的排队/取消/跨重启兑现、
-  释放能力的三种结果、以及降级服务组合。**88 项检查，0 失败。**
+  释放能力的三种结果、以及降级服务组合。每一项都是可运行的回归断言，`npm test` 打印准确项数。
 
 改代码前值得知道的两条不变量：
 

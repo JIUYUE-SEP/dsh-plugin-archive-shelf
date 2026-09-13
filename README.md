@@ -204,7 +204,7 @@ log's on-disk layout, and the `agents.release(id)` capability the optional host 
 After upgrading DSH, spend one minute on this:
 
 ```sh
-cd /path/to/dsh-plugin-archive-shelf && npm test   # client 32 + host 98 checks: did the upgrade break a contract?
+cd /path/to/dsh-plugin-archive-shelf && npm test   # both suites: client contract/rendering + host behaviour
 ```
 
 1. Restart, then open **Settings → Archive Shelf**: the list renders, the badges (running /
@@ -284,7 +284,7 @@ npm test        # zero dependencies; two suites: contract/rendering + host behav
   loopback HTTP servers, deleting and writing for real inside temp directories: path
   escape, an oversized body, running/resident refusals, queueing, cancelling, honouring
   the queue across a restart, the three release outcomes, and a service-less
-  composition. **88 checks, 0 failures.**
+  composition. Every one of them is a runnable regression assertion; `npm test` prints the exact totals.
 
 Two invariants worth knowing before you edit:
 
