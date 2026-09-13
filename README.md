@@ -1,300 +1,196 @@
 # dsh-plugin-archive-shelf
 
-An **Archive Shelf** for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI.
+给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI 用的**归档架**。
 
-Harness sessions can be archived, but the product ships no way back: the sidebar
-menu only hides them, and there is no unarchive control and no way to delete a
-session's logs. This plugin adds one settings page that lists **every archived
-session** and supplies the missing actions: restore, queue a deletion (which you
-can cancel again), and — where the host supports it — release a session and
-delete it immediately.
+DSH 的会话可以归档，但产品没有回程票：侧栏菜单只能把它藏起来，没有取消归档入口，
+也没有办法删除会话日志。这个插件补上这一页：列出**所有已归档会话**，并给出缺的那几个动作：
+还原、排队删除（可取消）、以及在有宿主支持时的即时释放。
 
-English | [中文](README.zh.md)
+[English](README.en.md) | 中文
 
-## What you get
+## 你会得到什么
 
-Settings → **Archive Shelf** (below *Agent presets*):
+设置 → **归档架**（在「Agent 预设」下面那一栏）：
 
-- every archived session with its **title**, workspace, directory, archive time and size on disk;
-- **Restore** — removes the session from the archive set; it reappears in the sidebar
-  **at its original position**, because archiving never touched its workspace slot.
-  Restoring does two things the product does not do by itself: it re-pulls the browser's
-  session list (a **released** session was dropped from it when the host announced
-  `session/disposed`), and it hands the new archive set to the product's workspace state.
-  Both are needed before the sidebar can show the row again. The one exception is
-  restoring the **last** archived session, which leaves no anchor to sync with — the
-  notice then says to refresh instead of pretending it worked;
-- **Delete permanently** — behind a confirmation dialog, removes the session's log
-  directory, its projection cache, and its workspace accounting. Irreversible;
-- **Queue deletion / Cancel queue** — for a session that cannot be deleted right now
-  (running or loaded), record the intent instead: the next `dsh` start deletes it.
-  A queued deletion is **always cancellable**, and cancelling does nothing else;
-- **Release** — shown only when your DSH exposes `agents.release(id)` (see below):
-  unloads the session's live runtime so it can be deleted at once, with no restart;
-- a status badge per row: **running** (an agent is driving a turn), **loaded**
-  (resident in the host process), or **queued** (deleted on the next start);
-- **Clean up** for stale archive records whose session no longer exists on disk.
+- 每条已归档会话的**标题**、工作区、目录、归档时间与磁盘占用；
+- **还原** —— 把它从归档集合里移除，会话**立刻回到侧栏原来的位置**（归档从不改动它的工作区槽位）；
+  还原时插件会做两件产品自己不会做的事：重新拉一次浏览器会话列表（被**释放**过的会话已被宿主
+  的 `session/disposed` 从列表里移除），并把新的归档集合对齐给产品的工作区状态。两者都做完，
+  侧栏才会立刻显示它。唯一的例外：还原的是**最后一条**归档会话时没有对齐锚点，那时提示会明说
+  「刷新页面即可」；
+- **彻底删除** —— 二次确认后删除会话日志目录、投影缓存与工作区记账。不可恢复；
+- **排队删除 / 取消排队** —— 给删不掉的会话（运行中或已载入）排一个队，
+  下次启动 `dsh` 时自动删除；**随时可以取消**，取消后什么都不会发生；
+- **释放** —— 仅当你的 DSH 带 `agents.release(id)` 能力时出现（见下），
+  点一下把会话的运行实例卸载掉，于是不用重启就能立刻删除它；
+- 每行状态徽标：**运行中**（agent 正在跑一轮）/ **已载入**（常驻在宿主进程内存里）/
+  **已排队**（下次启动时删除）；
+- **清理** —— 清掉那些磁盘上已经没有对应会话的失效归档记录。
 
-### What queueing means
+### 排队删除意味着什么
 
-Queueing deletes **nothing** right away; it records your intent:
+排队**不会**立刻删任何东西，它只是记下你的意图：
 
-- the queue lives in `.archive-shelf/pending.json` under the harness home (beside the
-  session root) and survives restarts;
-- it is honoured **only after the next `dsh` start** (a sweep a few seconds in); reading or
-  refreshing the shelf never deletes anything, so queueing and deleting stay separate
-  acts. An entry that is still resident or running at that moment waits for the start
-  after that;
-- a queued row shows the **queued** badge and a **Cancel queue** button; cancelling is
-  idempotent, so a stray click costs nothing;
-- if you **restore** a queued session, its queue entry is dropped — a session you
-  brought back is never deleted by a stale request.
+- 队列存在 harness home 下的 `.archive-shelf/pending.json`（会话根目录的上一级），重启后仍在；
+- 兑现只发生在**下次启动 `dsh` 之后**（启动后几秒的清扫）；**读取或刷新归档架永远不会删任何东西**，
+  所以"排队"和"删除"是两件分开的事。清扫时若会话仍在常驻/运行中，条目会留到再下一次启动；
+- 排队中的行显示**已排队**徽标与**取消排队**按钮；取消是幂等的，点错一次不会有任何后果；
+- 如果你在排队后又**还原**了这个会话，队列条目会被丢弃，绝不会删掉一个你已恢复的会话。
 
-### About the Release button
+### 关于「释放」按钮
 
-Once a session has been loaded in the host process there is no public way to unload
-it — that is the current shape of DSH (the `agents` service has no release-by-id
-method, and the one `dispose` handle that could do it is discarded by its creator).
-So the plugin **detects the capability**:
+会话一旦在宿主进程里被载入，就再也没有公开的卸载入口 —— 这是 DSH 当前的形态
+（`agents` 服务没有按 id 释放的方法，创建者拿到的那份 `dispose` 句柄被丢弃了）。
+所以插件的做法是**能力探测**：
 
-- if your DSH provides `agents.release(id)`, the list route reports `canRelease: true`
-  and rows grow a **Release** button: release → no longer resident → deletable, no
-  restart at any point;
-- without that capability the button **does not appear** (rather than failing when
-  clicked), and queued deletion remains available.
+- 你的 DSH 若提供 `agents.release(id)`，列表接口会报 `canRelease: true`，
+  行上出现**释放**按钮：`释放 → 该会话不再常驻 → 立刻可删`，全程不用重启；
+- 没有这个能力时按钮**不会出现**（而不是点了报错），队列删除照常可用。
 
-That host-side capability is **not in upstream DSH today**. To get it you either patch
-your own DSH (edit `packages/core/agent` in a source checkout, or `pnpm patch` an npm
-install) or wait for it to be accepted upstream.
+这份宿主侧能力目前**不在上游 DSH 里**。需要它就得给自己的 DSH 打补丁
+（源码装改 `packages/core/agent`，npm 装用 `pnpm patch`），或者等它被上游接受。
 
-## Making the Release button appear (optional host patch)
+## 让「释放」按钮出现（可选：给宿主打补丁）
 
-The patch ships with this repository: `patches/host-release.patch` — it touches only
-`packages/core/agent` (retain each agent handle's disposal capability and expose
-`release(id)`), plus a 161-line spec.
+补丁随仓库提供：`patches/host-release.patch`（只动 `packages/core/agent` —— 保留 agent
+handle 的 dispose 能力，并加一个按 id 释放的 `release(id)`，外加一个 161 行的测试）。
 
 ```sh
 cd /path/to/deepseek-harness
 git apply /path/to/dsh-plugin-archive-shelf/patches/host-release.patch
 pnpm exec tsc -b packages/core/agent && pnpm --filter @deepseek-ai/dsh-agent exec tsdown
-# restart dsh: loaded rows in the shelf now carry a Release button
+# 然后重启 dsh：归档架里常驻的行就会多出「释放」按钮
 ```
 
-- **A DSH upgrade can drop the patch, and `git pull` may refuse to merge it.** On a
-  conflict, run `git checkout -- packages/core/agent` and apply it again; either way the
-  change needs a rebuild and a restart.
-- **An npm-installed DSH cannot use this patch as-is**: it holds compiled `lib/` files, so
-  the equivalent change goes through `pnpm patch @deepseek-ai/dsh-agent` — same semantics,
-  different landing site.
-- The way to make it universal is an upstream PR; the patch is written to be one.
+- **升级 DSH 之后补丁可能被冲掉，或被 `git pull` 拒绝。** 冲突时先
+  `git checkout -- packages/core/agent` 再 `git apply` 一次即可，改完必须重新构建并重启。
+- **npm 安装的 DSH 不能直接套用这份补丁**：那里拿到的是编译后的 `lib/`，需要用
+  `pnpm patch @deepseek-ai/dsh-agent` 做等价改动（改动语义相同，落点不同）。
+- 想让所有人默认用上，正确做法是把它提到上游 PR —— 补丁本身就是为这个准备的。
 
-## Requirements
+## 环境要求
 
-- DeepSeek Harness with a `web` profile. Developed and verified against `0.1.5-rc.2`.
-- Node `^22.19 || >=24` (whatever the harness itself requires).
+- 带 `web` profile 的 DeepSeek Harness。开发与验证版本：`0.1.5-rc.2`。
+- Node `^22.19 || >=24`（与 harness 自身要求一致）。
 
-## Install
+## 安装
 
-**One command** — the dependency and the mount happen together, and re-running it is safe:
+**一条命令** —— 装依赖与挂载一次完成，重复执行也安全：
 
 ```sh
 dsh plugin --profile web add github:JIUYUE-SEP/dsh-plugin-archive-shelf
 ```
 
-Then **restart** `dsh` (`Ctrl+C`, then `dsh web` again) and reload the page. A static client
-plugin ships with the page's boot graph, so a plain refresh does not reliably pick it up
-(browser cache and scan timing both interfere); a restart always does.
+然后**重启** `dsh`（`Ctrl+C` 后重新 `dsh web`）并刷新页面。静态客户端插件随页面的
+boot graph 下发，单纯刷新并不保证拿到新插件（浏览器缓存、扫描时机都会搅局），
+重启则一定生效。
 
-Why that is enough: this package declares `dsh.bundle.patch` in its own `package.json` and
-ships a `cordis.patch.yml` layer. After pnpm finishes, `dsh plugin add` **reconciles that
-layer into the profile's `dsh.profile.bundles`**, so you never edit
-`~/.dsh/profiles/web/cordis.patch.yml` by hand.
+这一步为什么够了：本包在自己的 `package.json` 里声明了 `dsh.bundle.patch`，并自带
+`cordis.patch.yml` 层；`dsh plugin add` 在 pnpm 装完后会**自动把这个层加进 profile 的
+`dsh.profile.bundles`**，所以不需要你手动编辑 `~/.dsh/profiles/web/cordis.patch.yml`。
 
 <details>
-<summary>If the layer was not registered automatically (a DSH older than that reconciliation)</summary>
+<summary>如果那条层没有被自动登记（旧版 DSH 没有这套对账逻辑）</summary>
 
 ```yaml
-# Append to ~/.dsh/profiles/web/cordis.patch.yml, then restart
+# 手动追加到 ~/.dsh/profiles/web/cordis.patch.yml，然后重启
 - insert:
     - id: archive-shelf
       name: dsh-plugin-archive-shelf
 ```
 </details>
 
-### Local install
+### 本地安装
 
 ```sh
 git clone https://github.com/JIUYUE-SEP/dsh-plugin-archive-shelf.git
-dsh plugin --profile web add ./dsh-plugin-archive-shelf   # mounts itself the same way
+dsh plugin --profile web add ./dsh-plugin-archive-shelf   # 同样会自动挂载；重启生效
 ```
 
-### Uninstall
+### 卸载
 
 ```sh
-dsh plugin --profile web remove dsh-plugin-archive-shelf   # also drops it from dsh.profile.bundles
+dsh plugin --profile web remove dsh-plugin-archive-shelf   # 同时从 dsh.profile.bundles 里摘掉
 ```
 
-If you added the `- insert:` block from the fold-out above by hand, delete that too.
+若你当初是照上面那个折叠块**手动**加的 `- insert:`，再把它一起删掉即可。
 
-## Making the Release button appear (optional host patch)
+## DSH 升级后的自检
 
-The patch ships with this repository: `patches/host-release.patch` — it touches only
-`packages/core/agent` (retain each agent handle's disposal capability and expose
-`release(id)`), plus a 161-line spec.
+这份插件补的是产品明确没有的能力（归档是单向的、没有会话删除入口、没有卸载会话的 API），
+所以它必然要碰一些**没有被承诺**的东西：workspace registry 的私有 `setState`、会话日志的磁盘布局、
+以及宿主补丁提供的 `agents.release(id)`。升级 DSH 之后，花一分钟走一遍：
 
 ```sh
-cd /path/to/deepseek-harness
-git apply /path/to/dsh-plugin-archive-shelf/patches/host-release.patch
-pnpm exec tsc -b packages/core/agent && pnpm --filter @deepseek-ai/dsh-agent exec tsdown
-# restart dsh: loaded rows in the shelf now carry a Release button
+cd /path/to/dsh-plugin-archive-shelf && npm test   # 两套件：客户端契约/渲染 + 宿主行为（会打印各项数）
 ```
 
-- **A DSH upgrade can drop the patch, and `git pull` may refuse to merge it.** On a
-  conflict, run `git checkout -- packages/core/agent` and apply it again; either way the
-  change needs a rebuild and a restart.
-- **An npm-installed DSH cannot use this patch as-is**: it holds compiled `lib/` files, so
-  the equivalent change goes through `pnpm patch @deepseek-ai/dsh-agent` — same semantics,
-  different landing site.
-- The way to make it universal is an upstream PR; the patch is written to be one.
+1. 重启后打开 **设置 → 归档架**：列表能出、徽标（运行中 / 已载入 / 已排队）正确、没有报错条；
+2. 挑一条不重要的归档会话点**还原** —— 它应回到侧栏原位（验证 `setState` 还在）；
+3. 挑一条不要的会话**彻底删除** —— 目录消失，且侧栏不留打不开的残行；
+4. 看「已载入」的行上有没有**释放**按钮。没有就是宿主补丁被升级冲掉了，
+   按上一节重新 `git apply` + 重建 + 重启即可（此时功能会自动降级为排队删除）。
 
-## Requirements
+失败应该是**响亮**的：拿不到私有 API、路径对不上、读不到会话列表快照时，插件一律**拒绝**并写出原因，
+不会猜着删。真报错的话，把归档架里那句话连同 `npm test` 的输出一起提 issue。
 
-- DeepSeek Harness with a `web` profile. Developed and verified against `0.1.5-rc.2`.
-- Node `^22.19 || >=24` (whatever the harness itself requires).
+## 实现方式
 
-## Install
+**没有构建步骤**：两半都是纯 JavaScript，直接随包发布。
+
+- **`lib/index.js`（宿主半）** —— 一个 Cordis 插件，注入 `workspaceRegistry`、
+  `sessionPersistence`、`webServer`；注册一条同源 JSON 路由（`POST /archive-shelf/api`），
+  实现 `list` / `unarchive` / `delete` / `forget` / `queue` / `unqueue` / `release` 七个操作。
+  删除直接用 `node:fs` —— 宿主插件就是普通 Node 代码，不需要任何沙箱提权。
+  队列是本插件自己的状态，写在 `<harness home>/.archive-shelf/pending.json`，
+  写入走"临时文件 + rename"，避免半截文件。
+- **`lib/client.js`（浏览器半）** —— 直接写成客户端模块加载器的工厂形态
+  （`window.__ModuleLoader__.load({ id, factory })`）。原因是 harness 自己的客户端打包预设
+  位于其仓库内部、并未发布。它只注册一个 `settings.section`，
+  于是这一页出现在设置卡片的左侧 tab 栏里，产品源码一行都不用改。
+
+路由是自证的：`POST` + `content-type: application/json` + 自定义头
+`x-archive-shelf-client: 1` 组合起来对浏览器是**非简单请求**，跨站页面会先撞上
+CORS 预检（本服务不回答），再叠加一层 `Origin`/`Host` 同源校验。
+这防的是跨站请求，不防同机其它进程 —— 那些进程本来就能直接读写会话文件。
+
+## 已知限制
+
+- **取消归档走的是内部 API。** harness 没有公开的 unarchive 操作，插件通过 workspace
+  registry 自己的 `setState` 改写归档集合。将来 harness 改了内部结构，插件会**明确报错**
+  而不是静默失败。
+- **常驻或运行中的会话不能直接删。** 宿主进程已载入的会话把日志握在内存里；删掉磁盘文件会留下
+  "活着的会话 + 没有落盘记录"（宿主每次追加都按路径重开日志文件，删了目录要么报错、要么重建出
+  一份残档）。这类行有两个出口：**排队删除**（可取消，下次启动时兑现），
+  或在你打了宿主补丁的机器上**释放**后立刻删除。
+- **排队删除要等下一次启动。** 队列的目标就是跨进程：队列里的会话在启动清扫或下次打开归档架时
+  被真正删除。若某次清扫时它又常驻了（比如你刚打开过它），它会继续留在队列里等下一轮。
+- **「释放」需要宿主侧支持。** 见上文；没有这个能力的 DSH 上按钮不会出现，功能自动降级为排队。
+- **不删附件。** 被删除会话引用过的二进制附件仍留在 harness home 里。
+- **删除不可恢复**，没有回收站。
+- **产品允许归档一个正在运行的会话**（侧栏的归档动作没有任何拦截），这会让它在隐形状态下
+  继续消耗 token。归档架里的**运行中**徽标就是用来发现这种情况的。
+
+## 开发
 
 ```sh
-# 1. install the plugin into your web profile
-dsh plugin --profile web add github:JIUYUE-SEP/dsh-plugin-archive-shelf
+npm test        # 零依赖；两个套件：契约/渲染 + 宿主行为
 ```
 
-```yaml
-# 2. mount it — append to ~/.dsh/profiles/web/cordis.patch.yml
-- insert:
-    - id: archive-shelf
-      name: dsh-plugin-archive-shelf
-```
+- `test/plugin.test.mjs` 把宿主半当 ESM 模块导入、按客户端加载器的方式求值浏览器半，
+  并用一个极简 React 替身渲染出行，断言徽标、按钮可见性与禁用理由、失败文案，
+  以及每个按钮真正发出的那个请求；
+- `test/host.test.mjs` 用假 Cordis 上下文 + 真 loopback HTTP 服务驱动真的 `apply()`，
+  在临时目录里真删真写：路径逃逸、超大请求体、运行中/常驻拒绝、队列的排队/取消/跨重启兑现、
+  释放能力的三种结果、以及降级服务组合。每一项都是可运行的回归断言，`npm test` 打印准确项数。
 
-Then **restart** `dsh` and reload the page. A static client plugin is delivered
-with the page boot graph, so a plain refresh is not a reliable way to pick up a
-new or updated plugin; a restart always is.
+改代码前值得知道的两条不变量：
 
-### Manual / local install
+1. **浏览器 bundle 的模块 id 必须等于包名**（`registration.id === manifest.name`）——
+   loader 按这个名字查工厂；两者漂移时测试会失败。
+2. **宿主半不解析任何裸模块名**，只 import `node:` 内置模块，其它能力全靠注入的服务。
+   这正是它能待在 harness 仓库之外却仍能加载的原因。
 
-```sh
-git clone https://github.com/JIUYUE-SEP/dsh-plugin-archive-shelf.git
-dsh plugin --profile web add ./dsh-plugin-archive-shelf
-# same cordis.patch.yml row as above, then restart
-```
+## 许可证
 
-### Uninstall
-
-```sh
-dsh plugin --profile web remove dsh-plugin-archive-shelf
-# then delete the `- insert:` row you added to cordis.patch.yml
-```
-
-## After a DSH upgrade
-
-This plugin fills gaps the product explicitly does not offer (archiving is one-way, there is
-no session-deletion entry point, and no API unloads a session), so it necessarily touches
-things that were **never promised**: the workspace registry's private `setState`, the session
-log's on-disk layout, and the `agents.release(id)` capability the optional host patch adds.
-After upgrading DSH, spend one minute on this:
-
-```sh
-cd /path/to/dsh-plugin-archive-shelf && npm test   # both suites: client contract/rendering + host behaviour
-```
-
-1. Restart, then open **Settings → Archive Shelf**: the list renders, the badges (running /
-   loaded / queued) are right, and no error banner appears;
-2. **Restore** one archived session you do not care about — it must return to its sidebar
-   position (this is the `setState` check);
-3. **Delete** one session you do not want — its directory goes away and no unopenable row is
-   left behind in the sidebar;
-4. Check whether loaded rows carry a **Release** button. If they do not, a DSH upgrade
-   dropped the host patch: re-apply it as described above, rebuild, and restart (until then
-   the feature degrades to queued deletion on its own).
-
-Failures are meant to be **loud**: when a private API is gone, a path no longer matches, or the
-session-list snapshot cannot be read, the plugin refuses and says why instead of guessing. If
-something does break, open an issue with the message the shelf showed plus your `npm test` output.
-
-## How it works
-
-No build step: both halves are plain JavaScript and shipped as-is.
-
-- **`lib/index.js` (host)** — a Cordis plugin injecting `workspaceRegistry`,
-  `sessionPersistence` and `webServer`. It registers one same-origin JSON route
-  (`POST /archive-shelf/api`) and implements seven operations: `list`,
-  `unarchive`, `delete`, `forget`, `queue`, `unqueue`, `release`. Deleting uses
-  `node:fs` directly — the host plugin is ordinary Node code, so it needs no
-  sandbox escalation. The queue is this plugin's own state, written to
-  `<harness home>/.archive-shelf/pending.json` through a temporary file plus a
-  rename, so a half-written queue can never be read back.
-- **`lib/client.js` (browser)** — written directly in the client module loader's
-  factory form (`window.__ModuleLoader__.load({ id, factory })`), because the
-  harness's own client bundler preset lives inside its repository and is not
-  published. It registers one `settings.section`, so the page appears in the
-  settings card's left tab bar and needs no change to the product.
-
-The route authenticates itself: `POST` + `content-type: application/json` + the
-`x-archive-shelf-client: 1` marker header is a *non-simple* cross-origin request,
-so a foreign page hits a CORS preflight this server never answers, and an
-`Origin`/`Host` match is checked on top. That protects against cross-site
-requests, not against other processes on the same machine — those can already
-read and delete session files directly.
-
-## Known limitations
-
-- **Restoring uses an internal API.** The harness has no public unarchive
-  operation, so the plugin writes the archive set through the workspace
-  registry's own `setState`. If a harness upgrade changes that internals shape
-  the plugin fails loudly instead of silently doing nothing.
-- **A resident or running session cannot be deleted directly.** A session the host
-  process has loaded keeps its log in memory, and the host re-opens that log by path
-  on every append, so removing the files underneath it would either fail the live
-  session or resurrect a partial log. Such rows have two ways out: **queue the
-  deletion** (cancellable, honoured on the next start), or **release** the session
-  first on a host that supports it.
-- **A queued deletion waits for the next start.** Crossing processes is the point of
-  the queue: entries are honoured by the startup sweep and on every shelf load. If the
-  session is resident again by then, it stays queued for the next attempt.
-- **Release needs host support.** See above; without it the button is absent and the
-  feature degrades to queueing.
-- **Attachments are not deleted.** Binary attachments a deleted session
-  referenced stay in the harness home.
-- **Deletion is irreversible** and there is no trash.
-- **Archiving a running session is allowed by the product** (the sidebar's
-  archive action has no guard), which hides a session that keeps consuming
-  tokens. The shelf's *running* badge is how you see one.
-
-## Development
-
-```sh
-npm test        # zero dependencies; two suites: contract/rendering + host behaviour
-```
-
-- `test/plugin.test.mjs` imports the host half as an ESM module, evaluates the browser
-  half the way the client loader does, and renders rows through a minimal React
-  stand-in, asserting badges, button visibility and disabled reasons, failure copy, and
-  the exact request each button sends;
-- `test/host.test.mjs` drives the real `apply()` through fake Cordis contexts and real
-  loopback HTTP servers, deleting and writing for real inside temp directories: path
-  escape, an oversized body, running/resident refusals, queueing, cancelling, honouring
-  the queue across a restart, the three release outcomes, and a service-less
-  composition. Every one of them is a runnable regression assertion; `npm test` prints the exact totals.
-
-Two invariants worth knowing before you edit:
-
-1. **The browser bundle's module id must equal the package name**
-   (`registration.id === manifest.name`) — the loader looks the factory up by
-   that name. The test fails if they drift.
-2. **The host resolves nothing by bare specifier.** It imports `node:` builtins
-   only; every other capability arrives through injected services. That is what
-   lets the package live outside the harness repository and still load.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT —— 见 [LICENSE](LICENSE)。
