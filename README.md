@@ -35,8 +35,10 @@ Queueing deletes **nothing** right away; it records your intent:
 
 - the queue lives in `.archive-shelf/pending.json` under the harness home (beside the
   session root) and survives restarts;
-- after every start, and on every shelf load, the plugin tries to honour it; a session
-  is deleted only once it is no longer resident;
+- it is honoured **only after the next `dsh` start** (a sweep a few seconds in); reading or
+  refreshing the shelf never deletes anything, so queueing and deleting stay separate
+  acts. An entry that is still resident or running at that moment waits for the start
+  after that;
 - a queued row shows the **queued** badge and a **Cancel queue** button; cancelling is
   idempotent, so a stray click costs nothing;
 - if you **restore** a queued session, its queue entry is dropped — a session you

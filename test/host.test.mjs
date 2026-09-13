@@ -34,6 +34,12 @@ const gap = (label, detail = '') => {
 const enc = id => (id === '.' ? '~002E' : id === '..' ? '~002E~002E' : [...id].map(c =>
   c !== '~' && /^[A-Za-z0-9._-]$/.test(c) ? c : '~' + c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')).join(''))
 
+/** Fire the scheduled boot sweep and let its async work settle. */
+const fireBootSweep = async (instance) => {
+  for (const timer of instance.timers) timer.callback()
+  for (let tick = 0; tick < 4; tick++) await new Promise(resolve => setTimeout(resolve, 0))
+}
+
 const sandbox = await mkdtemp(join(tmpdir(), 'asx-host-'))
 const root = join(sandbox, 'sessions')
 const project = join(root, '--home-jiuyue--')
@@ -307,10 +313,25 @@ check((await queued.call({ action: 'list' })).json.rows.find(r => r.id === queue
 check((await queued.call({ action: 'queue', sessionId: 'session-not-archived' })).json.ok === false, 'queue refuses a session that is not archived')
 check((await queued.call({ action: 'queue' })).status === 400, 'queue without sessionId is a 400')
 
-// A second blocked session queues alongside, and both survive sweeps.
+// The incident guard: reading the shelf must never act on the queue. A sweep on
+// list would turn "queue this" into "delete this" for any row that happened to
+// be deletable by the next read, without the delete confirmation the delete
+// action owns.
+await queued.call({ action: 'queue', sessionId: forgetOnDiskId })
+await queued.call({ action: 'list' })
+await queued.call({ action: 'list' })
+const afterLists = (await queued.call({ action: 'list' })).json
+check(existsSync(join(project, enc(forgetOnDiskId))), 'a queued session survives list calls')
+check(afterLists.pending.includes(forgetOnDiskId), 'and it is still queued')
+check(afterLists.rows.find(r => r.id === forgetOnDiskId).pending === true, 'and still shows the queued badge')
+check(afterLists.swept === null, 'and no sweep notice was invented')
+await queued.call({ action: 'unqueue', sessionId: forgetOnDiskId })
+
+// A blocked session stays queued through the boot sweep that refuses it.
 await queued.call({ action: 'queue', sessionId: residentId })
+await fireBootSweep(queued)
 const afterRefusal = (await queued.call({ action: 'list' })).json
-check(afterRefusal.pending.includes(residentId), 'a resident session stays queued through a sweep')
+check(afterRefusal.pending.includes(residentId), 'a resident session stays queued through the boot sweep')
 check((await queued.call({ action: 'release', sessionId: residentId })).json.code === 'unsupported', 'release reports the missing capability')
 
 // The user cancels one and keeps the other; the queue must survive a restart.
@@ -320,8 +341,9 @@ check(JSON.parse(await readFile(queued.queueFile, 'utf8')).pending.includes(queu
 await queued.close()
 
 const restarted = await boot('full', { archived: queueArchived, withTimer: true })
+await fireBootSweep(restarted)
 const swept = (await restarted.call({ action: 'list' })).json
-check(swept.swept !== null && swept.swept.deleted === 1, 'the sweep deletes the queued session', JSON.stringify(swept.swept))
+check(swept.swept !== null && swept.swept.deleted === 1, 'the boot sweep deletes the queued session', JSON.stringify(swept.swept))
 check(!existsSync(join(queueProject, enc(queuedId))), 'the queued session directory is gone')
 check(!existsSync(queueProject), 'its now-empty project directory is gone too')
 check(swept.rows.every(r => r.id !== queuedId), 'the swept session left the archive rows')
@@ -331,6 +353,7 @@ check((await restarted.call({ action: 'list' })).json.swept === null, 'the sweep
 // A queued id the user restored is dropped, not deleted.
 await restarted.call({ action: 'queue', sessionId: runningId })
 await restarted.call({ action: 'unarchive', sessionId: runningId })
+await fireBootSweep(restarted)
 const restoredWhileQueued = (await restarted.call({ action: 'list' })).json
 check(!restoredWhileQueued.pending.includes(runningId), 'restoring a queued session drops the queue entry')
 check((await restarted.call({ action: 'delete', sessionId: runningId, confirm: true })).json.ok === false, 'the restored session was not deleted')
