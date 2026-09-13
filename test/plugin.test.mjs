@@ -83,7 +83,11 @@ const rows = [
   { id: 'c', title: 'cold', workspace: 'w', cwd: '/tmp', createdAt: 3, live: false, running: false, onDisk: true, sizeBytes: 3 },
 ]
 let payload = { ok: true, rows, dangling: [] }
-globalThis.fetch = async () => ({ json: async () => payload })
+const requests = []
+globalThis.fetch = async (_url, init) => {
+  if (init !== undefined) requests.push(JSON.parse(init.body))
+  return { json: async () => payload }
+}
 
 const props = {
   t: (key, params) => (params === undefined ? key : `${key}${JSON.stringify(params)}`),
@@ -146,6 +150,103 @@ for (const [code, expected] of [['running', 'failedRunning'], ['resident', 'fail
   })
   check(`host refusal "${code}" renders localized copy`, messages.includes(expected), messages.join('|'))
 }
+
+
+// --- queueing, cancelling, and releasing -------------------------------------
+const findRow = (node, id) => {
+  let found = null
+  walk(node, (candidate) => {
+    if (candidate.type === 'div' && candidate.props.key === id && String(candidate.props.className ?? '').includes('asx-row')) found = candidate
+  })
+  return found
+}
+const labelsOf = (row) => {
+  const labels = []
+  walk(row, (candidate) => { if (candidate.type === 'button') labels.push(candidate.children?.[0]) })
+  return labels
+}
+const buttonOf = (row, label) => {
+  let found = null
+  walk(row, (candidate) => { if (candidate.type === 'button' && candidate.children?.[0] === label) found = candidate })
+  return found
+}
+const badgesOf = (node) => {
+  const badges = []
+  walk(node, (candidate) => {
+    if (candidate.type === 'span' && String(candidate.props.className ?? '').includes('asx-badge-queued')) badges.push(candidate.children?.[0])
+  })
+  return badges
+}
+/** Render, run the pending effects (the initial load), then render the settled tree. */
+const cycle = async () => {
+  cursor = 0
+  captured.component(props)
+  const pending = effects
+  effects = []
+  for (const effect of pending) effect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  cursor = 0
+  return captured.component(props)
+}
+
+const blockedRow = { id: 'b', title: 'resident', workspace: '', cwd: '/tmp', createdAt: 2, live: true, running: false, pending: false, onDisk: true, sizeBytes: 2 }
+const queuedRow = { id: 'd', title: 'queued', workspace: '', cwd: '/tmp', createdAt: 4, live: true, running: false, pending: true, onDisk: true, sizeBytes: 4 }
+
+payload = { ok: true, rows: [blockedRow, queuedRow], dangling: [], canRelease: false, pending: ['d'] }
+let shelf = await cycle()
+let blockedNode = findRow(shelf, 'b')
+let queuedNode = findRow(shelf, 'd')
+check('a blocked row offers queueing', labelsOf(blockedNode).includes('queue'), labelsOf(blockedNode).join('|'))
+check('a queued row offers cancellation', labelsOf(queuedNode).includes('unqueue'), labelsOf(queuedNode).join('|'))
+check('a queued row carries the queued badge', badgesOf(queuedNode).includes('queued'), badgesOf(queuedNode).join('|'))
+check('the release button stays hidden without the capability', !labelsOf(blockedNode).includes('release'), labelsOf(blockedNode).join('|'))
+
+requests.length = 0
+buttonOf(blockedNode, 'queue').props.onClick()
+await new Promise(resolve => setTimeout(resolve, 0))
+await new Promise(resolve => setTimeout(resolve, 0))
+check('the queue button posts the queue action',
+  requests.some(body => body.action === 'queue' && body.sessionId === 'b'), JSON.stringify(requests))
+
+shelf = await cycle()
+requests.length = 0
+buttonOf(findRow(shelf, 'd'), 'unqueue').props.onClick()
+await new Promise(resolve => setTimeout(resolve, 0))
+await new Promise(resolve => setTimeout(resolve, 0))
+check('the cancel button posts the unqueue action',
+  requests.some(body => body.action === 'unqueue' && body.sessionId === 'd'), JSON.stringify(requests))
+
+payload = { ok: true, rows: [blockedRow], dangling: [], canRelease: true, pending: [] }
+shelf = await cycle()
+blockedNode = findRow(shelf, 'b')
+check('the release button appears with the capability', labelsOf(blockedNode).includes('release'), labelsOf(blockedNode).join('|'))
+
+requests.length = 0
+buttonOf(blockedNode, 'release').props.onClick()
+await new Promise(resolve => setTimeout(resolve, 0))
+await new Promise(resolve => setTimeout(resolve, 0))
+check('the release button posts the release action',
+  requests.some(body => body.action === 'release' && body.sessionId === 'b'), JSON.stringify(requests))
+
+payload = { ok: true, rows: [], dangling: [], canRelease: false, pending: [], swept: { deleted: 2, at: 1 } }
+shelf = await cycle()
+const notices = []
+walk(shelf, (node) => {
+  if (node.type === 'div' && String(node.props.className ?? '').includes('asx-msg-ok')) notices.push(node.children?.[0])
+})
+check('a startup sweep reports what it deleted', notices.some(text => String(text).startsWith('swept')), notices.join('|'))
+
+// --- host surface for the new actions ---------------------------------------
+const hostSource = read('lib/index.js')
+check('host implements queue, unqueue, and release actions',
+  ["case 'queue'", "case 'unqueue'", "case 'release'"].every(needle => hostSource.includes(needle)))
+check('host persists the queue beside the session root',
+  hostSource.includes("'.archive-shelf'") && hostSource.includes("'pending.json'"))
+check('host feature-detects the agent release capability',
+  hostSource.includes("typeof agents.release === 'function'"))
+check('host normalizes a trailing separator on the session root',
+  hostSource.includes("config.root.replace(/\\/+$/, '')"))
 
 // --- styling regressions -----------------------------------------------------
 check('primary button uses the theme fill + on-brand label pair',

@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-archive-shelf",
-  "version": "0.1.0",
-  "description": "Archive Shelf for the DeepSeek Harness Web GUI: list every archived session, restore it, or delete it for good.",
+  "version": "0.2.0",
+  "description": "Archive Shelf for the DeepSeek Harness Web GUI: list every archived session, restore it, queue its deletion, or delete it for good.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -38,6 +38,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test/plugin.test.mjs"
+    "test": "node test/plugin.test.mjs && node test/host.test.mjs"
   }
 }

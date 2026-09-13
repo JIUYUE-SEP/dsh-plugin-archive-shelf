@@ -5,7 +5,9 @@ An **Archive Shelf** for the [DeepSeek Harness](https://github.com/deepseek-ai/d
 Harness sessions can be archived, but the product ships no way back: the sidebar
 menu only hides them, and there is no unarchive control and no way to delete a
 session's logs. This plugin adds one settings page that lists **every archived
-session** and gives you the two missing actions.
+session** and supplies the missing actions: restore, queue a deletion (which you
+can cancel again), and — where the host supports it — release a session and
+delete it immediately.
 
 English | [中文](README.zh.md)
 
@@ -18,9 +20,44 @@ Settings → **Archive Shelf** (below *Agent presets*):
   **at its original position**, because archiving never touched its workspace slot;
 - **Delete permanently** — behind a confirmation dialog, removes the session's log
   directory, its projection cache, and its workspace accounting. Irreversible;
-- a status badge per row: **running** (an agent is driving a turn) or **loaded**
-  (resident in the host process). Neither can be deleted safely — see limitations;
+- **Queue deletion / Cancel queue** — for a session that cannot be deleted right now
+  (running or loaded), record the intent instead: the next `dsh` start deletes it.
+  A queued deletion is **always cancellable**, and cancelling does nothing else;
+- **Release** — shown only when your DSH exposes `agents.release(id)` (see below):
+  unloads the session's live runtime so it can be deleted at once, with no restart;
+- a status badge per row: **running** (an agent is driving a turn), **loaded**
+  (resident in the host process), or **queued** (deleted on the next start);
 - **Clean up** for stale archive records whose session no longer exists on disk.
+
+### What queueing means
+
+Queueing deletes **nothing** right away; it records your intent:
+
+- the queue lives in `.archive-shelf/pending.json` under the harness home (beside the
+  session root) and survives restarts;
+- after every start, and on every shelf load, the plugin tries to honour it; a session
+  is deleted only once it is no longer resident;
+- a queued row shows the **queued** badge and a **Cancel queue** button; cancelling is
+  idempotent, so a stray click costs nothing;
+- if you **restore** a queued session, its queue entry is dropped — a session you
+  brought back is never deleted by a stale request.
+
+### About the Release button
+
+Once a session has been loaded in the host process there is no public way to unload
+it — that is the current shape of DSH (the `agents` service has no release-by-id
+method, and the one `dispose` handle that could do it is discarded by its creator).
+So the plugin **detects the capability**:
+
+- if your DSH provides `agents.release(id)`, the list route reports `canRelease: true`
+  and rows grow a **Release** button: release → no longer resident → deletable, no
+  restart at any point;
+- without that capability the button **does not appear** (rather than failing when
+  clicked), and queued deletion remains available.
+
+That host-side capability is **not in upstream DSH today**. To get it you either patch
+your own DSH (edit `packages/core/agent` in a source checkout, or `pnpm patch` an npm
+install) or wait for it to be accepted upstream.
 
 ## Requirements
 
@@ -66,9 +103,12 @@ No build step: both halves are plain JavaScript and shipped as-is.
 
 - **`lib/index.js` (host)** — a Cordis plugin injecting `workspaceRegistry`,
   `sessionPersistence` and `webServer`. It registers one same-origin JSON route
-  (`POST /archive-shelf/api`) and implements four operations: `list`,
-  `unarchive`, `delete`, `forget`. Deleting uses `node:fs` directly — the host
-  plugin is ordinary Node code, so it needs no sandbox escalation.
+  (`POST /archive-shelf/api`) and implements seven operations: `list`,
+  `unarchive`, `delete`, `forget`, `queue`, `unqueue`, `release`. Deleting uses
+  `node:fs` directly — the host plugin is ordinary Node code, so it needs no
+  sandbox escalation. The queue is this plugin's own state, written to
+  `<harness home>/.archive-shelf/pending.json` through a temporary file plus a
+  rename, so a half-written queue can never be read back.
 - **`lib/client.js` (browser)** — written directly in the client module loader's
   factory form (`window.__ModuleLoader__.load({ id, factory })`), because the
   harness's own client bundler preset lives inside its repository and is not
@@ -88,11 +128,17 @@ read and delete session files directly.
   operation, so the plugin writes the archive set through the workspace
   registry's own `setState`. If a harness upgrade changes that internals shape
   the plugin fails loudly instead of silently doing nothing.
-- **Resident or running sessions cannot be deleted.** A session that the host
-  process has loaded keeps its log in memory; deleting the files underneath it
-  would leave a live session with no durable record (and a later append could
-  write the log back). Such rows say so and their delete button stays disabled —
-  restart `dsh`, and they are deletable.
+- **A resident or running session cannot be deleted directly.** A session the host
+  process has loaded keeps its log in memory, and the host re-opens that log by path
+  on every append, so removing the files underneath it would either fail the live
+  session or resurrect a partial log. Such rows have two ways out: **queue the
+  deletion** (cancellable, honoured on the next start), or **release** the session
+  first on a host that supports it.
+- **A queued deletion waits for the next start.** Crossing processes is the point of
+  the queue: entries are honoured by the startup sweep and on every shelf load. If the
+  session is resident again by then, it stays queued for the next attempt.
+- **Release needs host support.** See above; without it the button is absent and the
+  feature degrades to queueing.
 - **Attachments are not deleted.** Binary attachments a deleted session
   referenced stay in the harness home.
 - **Deletion is irreversible** and there is no trash.
@@ -103,12 +149,18 @@ read and delete session files directly.
 ## Development
 
 ```sh
-npm test        # zero dependencies; drives both shipped artifacts
+npm test        # zero dependencies; two suites: contract/rendering + host behaviour
 ```
 
-The test imports the host half as an ESM module, evaluates the browser half the
-way the client loader does, and renders rows through a minimal React stand-in so
-badge, disabled-button and failure-copy behaviour are all asserted.
+- `test/plugin.test.mjs` imports the host half as an ESM module, evaluates the browser
+  half the way the client loader does, and renders rows through a minimal React
+  stand-in, asserting badges, button visibility and disabled reasons, failure copy, and
+  the exact request each button sends;
+- `test/host.test.mjs` drives the real `apply()` through fake Cordis contexts and real
+  loopback HTTP servers, deleting and writing for real inside temp directories: path
+  escape, an oversized body, running/resident refusals, queueing, cancelling, honouring
+  the queue across a restart, the three release outcomes, and a service-less
+  composition. **88 checks, 0 failures.**
 
 Two invariants worth knowing before you edit:
 
