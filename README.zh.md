@@ -71,35 +71,45 @@ pnpm exec tsc -b packages/core/agent && pnpm --filter @deepseek-ai/dsh-agent exe
 
 ## 安装
 
+**一条命令** —— 装依赖与挂载一次完成，重复执行也安全：
+
 ```sh
-# 1. 装进你的 web profile
 dsh plugin --profile web add github:JIUYUE-SEP/dsh-plugin-archive-shelf
 ```
 
+然后**重启** `dsh`（`Ctrl+C` 后重新 `dsh web`）并刷新页面。静态客户端插件随页面的
+boot graph 下发，单纯刷新并不保证拿到新插件（浏览器缓存、扫描时机都会搅局），
+重启则一定生效。
+
+这一步为什么够了：本包在自己的 `package.json` 里声明了 `dsh.bundle.patch`，并自带
+`cordis.patch.yml` 层；`dsh plugin add` 在 pnpm 装完后会**自动把这个层加进 profile 的
+`dsh.profile.bundles`**，所以不需要你手动编辑 `~/.dsh/profiles/web/cordis.patch.yml`。
+
+<details>
+<summary>如果那条层没有被自动登记（旧版 DSH 没有这套对账逻辑）</summary>
+
 ```yaml
-# 2. 挂载 —— 追加到 ~/.dsh/profiles/web/cordis.patch.yml
+# 手动追加到 ~/.dsh/profiles/web/cordis.patch.yml，然后重启
 - insert:
     - id: archive-shelf
       name: dsh-plugin-archive-shelf
 ```
-
-然后**重启** `dsh` 并刷新页面。静态客户端插件随页面的 boot graph 下发，
-单纯刷新并不保证拿到新插件（浏览器缓存、扫描时机都会搅局），重启则一定生效。
+</details>
 
 ### 本地安装
 
 ```sh
 git clone https://github.com/JIUYUE-SEP/dsh-plugin-archive-shelf.git
-dsh plugin --profile web add ./dsh-plugin-archive-shelf
-# cordis.patch.yml 里加同样那一行，然后重启
+dsh plugin --profile web add ./dsh-plugin-archive-shelf   # 同样会自动挂载；重启生效
 ```
 
 ### 卸载
 
 ```sh
-dsh plugin --profile web remove dsh-plugin-archive-shelf
-# 再删掉你加进 cordis.patch.yml 的那段 `- insert:`
+dsh plugin --profile web remove dsh-plugin-archive-shelf   # 同时从 dsh.profile.bundles 里摘掉
 ```
+
+若你当初是照上面那个折叠块**手动**加的 `- insert:`，再把它一起删掉即可。
 
 ## DSH 升级后的自检
 

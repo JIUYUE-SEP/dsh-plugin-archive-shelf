@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-archive-shelf",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Archive Shelf for the DeepSeek Harness Web GUI: list every archived session, restore it, queue its deletion, or delete it for good.",
   "type": "module",
   "license": "MIT",
@@ -26,6 +26,9 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web"
     }
@@ -33,6 +36,7 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "cordis.patch.yml",
     "README.md",
     "README.zh.md",
     "LICENSE"

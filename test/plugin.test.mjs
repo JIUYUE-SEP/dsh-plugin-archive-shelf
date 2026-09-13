@@ -312,6 +312,19 @@ await new Promise(resolve => setTimeout(resolve, 0))
 check('the boot sweep report is cleaned up once the row is gone from the list',
   requests.some(body => body.action === 'forget' && body.sessionId === 'z'), JSON.stringify(requests))
 
+// --- mount contract ----------------------------------------------------------
+const layerRelative = manifest.dsh?.bundle?.patch
+check('the package declares its profile layer', typeof layerRelative === 'string', String(layerRelative))
+const layerFile = String(layerRelative).replace(/^\.\//, '')
+const layer = read(layerFile)
+check('the layer mounts exactly this package',
+  layer.includes('id: archive-shelf') && layer.includes(`name: ${manifest.name}`),
+  layer.trim().split('\n').at(-1))
+check('the layer ships inside the package', Array.isArray(manifest.files) && manifest.files.includes(layerFile),
+  JSON.stringify(manifest.files))
+check('the client half still declares its platform', manifest.dsh?.client?.platform === 'web',
+  JSON.stringify(manifest.dsh?.client))
+
 // --- host surface for the new actions ---------------------------------------
 const hostSource = read('lib/index.js')
 check('host implements queue, unqueue, and release actions',

@@ -1,0 +1,12 @@
+# Profile layer shipped with this package.
+#
+# Declaring `dsh.bundle.patch` in package.json makes `dsh plugin --profile <name>
+# add <this package>` reconcile this layer into the profile's `dsh.profile.bundles`
+# automatically, so installing the shelf is one command and needs no manual edit
+# of the profile's own cordis.patch.yml.
+#
+# The row name is this package's name: the profile resolves it through its own
+# node_modules once the dependency is installed.
+- insert:
+    - id: archive-shelf
+      name: dsh-plugin-archive-shelf

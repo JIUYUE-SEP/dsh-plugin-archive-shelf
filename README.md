@@ -89,6 +89,75 @@ pnpm exec tsc -b packages/core/agent && pnpm --filter @deepseek-ai/dsh-agent exe
 
 ## Install
 
+**One command** — the dependency and the mount happen together, and re-running it is safe:
+
+```sh
+dsh plugin --profile web add github:JIUYUE-SEP/dsh-plugin-archive-shelf
+```
+
+Then **restart** `dsh` (`Ctrl+C`, then `dsh web` again) and reload the page. A static client
+plugin ships with the page's boot graph, so a plain refresh does not reliably pick it up
+(browser cache and scan timing both interfere); a restart always does.
+
+Why that is enough: this package declares `dsh.bundle.patch` in its own `package.json` and
+ships a `cordis.patch.yml` layer. After pnpm finishes, `dsh plugin add` **reconciles that
+layer into the profile's `dsh.profile.bundles`**, so you never edit
+`~/.dsh/profiles/web/cordis.patch.yml` by hand.
+
+<details>
+<summary>If the layer was not registered automatically (a DSH older than that reconciliation)</summary>
+
+```yaml
+# Append to ~/.dsh/profiles/web/cordis.patch.yml, then restart
+- insert:
+    - id: archive-shelf
+      name: dsh-plugin-archive-shelf
+```
+</details>
+
+### Local install
+
+```sh
+git clone https://github.com/JIUYUE-SEP/dsh-plugin-archive-shelf.git
+dsh plugin --profile web add ./dsh-plugin-archive-shelf   # mounts itself the same way
+```
+
+### Uninstall
+
+```sh
+dsh plugin --profile web remove dsh-plugin-archive-shelf   # also drops it from dsh.profile.bundles
+```
+
+If you added the `- insert:` block from the fold-out above by hand, delete that too.
+
+## Making the Release button appear (optional host patch)
+
+The patch ships with this repository: `patches/host-release.patch` — it touches only
+`packages/core/agent` (retain each agent handle's disposal capability and expose
+`release(id)`), plus a 161-line spec.
+
+```sh
+cd /path/to/deepseek-harness
+git apply /path/to/dsh-plugin-archive-shelf/patches/host-release.patch
+pnpm exec tsc -b packages/core/agent && pnpm --filter @deepseek-ai/dsh-agent exec tsdown
+# restart dsh: loaded rows in the shelf now carry a Release button
+```
+
+- **A DSH upgrade can drop the patch, and `git pull` may refuse to merge it.** On a
+  conflict, run `git checkout -- packages/core/agent` and apply it again; either way the
+  change needs a rebuild and a restart.
+- **An npm-installed DSH cannot use this patch as-is**: it holds compiled `lib/` files, so
+  the equivalent change goes through `pnpm patch @deepseek-ai/dsh-agent` — same semantics,
+  different landing site.
+- The way to make it universal is an upstream PR; the patch is written to be one.
+
+## Requirements
+
+- DeepSeek Harness with a `web` profile. Developed and verified against `0.1.5-rc.2`.
+- Node `^22.19 || >=24` (whatever the harness itself requires).
+
+## Install
+
 ```sh
 # 1. install the plugin into your web profile
 dsh plugin --profile web add github:JIUYUE-SEP/dsh-plugin-archive-shelf
