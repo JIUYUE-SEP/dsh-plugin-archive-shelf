@@ -17,10 +17,13 @@ Settings → **Archive Shelf** (below *Agent presets*):
 
 - every archived session with its **title**, workspace, directory, archive time and size on disk;
 - **Restore** — removes the session from the archive set; it reappears in the sidebar
-  **at its original position**, because archiving never touched its workspace slot. The
-  plugin also hands the new set to the product's own UI state, so no page refresh is
-  needed — except when that was the **last** archived session (no anchor left to sync
-  with), where the sidebar may need one refresh;
+  **at its original position**, because archiving never touched its workspace slot.
+  Restoring does two things the product does not do by itself: it re-pulls the browser's
+  session list (a **released** session was dropped from it when the host announced
+  `session/disposed`), and it hands the new archive set to the product's workspace state.
+  Both are needed before the sidebar can show the row again. The one exception is
+  restoring the **last** archived session, which leaves no anchor to sync with — the
+  notice then says to refresh instead of pretending it worked;
 - **Delete permanently** — behind a confirmation dialog, removes the session's log
   directory, its projection cache, and its workspace accounting. Irreversible;
 - **Queue deletion / Cancel queue** — for a session that cannot be deleted right now

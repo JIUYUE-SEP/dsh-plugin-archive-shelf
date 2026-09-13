@@ -335,6 +335,8 @@ const archiveCalls = []
 const workspacesStub = {
   archiveSession: async (id) => { archiveCalls.push(id); },
 }
+const listRefreshes = { count: 0 }
+const countingSessions = { refresh: async () => { listRefreshes.count += 1 }, list: { getSnapshot: () => ({ byId: {} }) } }
 const clickRestore = async (component, rowId) => {
   const tree = await settle(component)
   buttonOf(findRow(tree, rowId), 'restore').props.onClick()
@@ -344,20 +346,23 @@ const clickRestore = async (component, rowId) => {
 }
 
 archiveCalls.length = 0
+listRefreshes.count = 0
 payload = restorePayload(['session-still-archived'])
-await clickRestore(mounted(listStub({}), { workspaces: workspacesStub }), 'c')
+await clickRestore(mounted(countingSessions, { workspaces: workspacesStub }), 'c')
 check('a restore hands the product projection the complete new archive set',
   archiveCalls.length === 1 && archiveCalls[0] === 'session-still-archived', JSON.stringify(archiveCalls))
+check('a restore also re-pulls the session list (a released session left it)',
+  listRefreshes.count === 1, String(listRefreshes.count))
 
 archiveCalls.length = 0
 payload = restorePayload([])
-await clickRestore(mounted(listStub({}), { workspaces: workspacesStub }), 'c')
+await clickRestore(mounted(countingSessions, { workspaces: workspacesStub }), 'c')
 check('restoring the last archived session has no anchor and is reported honestly',
   archiveCalls.length === 0, JSON.stringify(archiveCalls))
 
 requests.length = 0
 payload = restorePayload(['session-still-archived'])
-await clickRestore(mounted(listStub({})), 'c')
+await clickRestore(mounted(countingSessions), 'c')
 check('a missing workspace service never breaks the restore',
   requests.some(body => body.action === 'unarchive'), JSON.stringify(requests))
 
