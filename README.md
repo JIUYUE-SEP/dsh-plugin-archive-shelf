@@ -120,6 +120,32 @@ dsh plugin --profile web remove dsh-plugin-archive-shelf
 # then delete the `- insert:` row you added to cordis.patch.yml
 ```
 
+## After a DSH upgrade
+
+This plugin fills gaps the product explicitly does not offer (archiving is one-way, there is
+no session-deletion entry point, and no API unloads a session), so it necessarily touches
+things that were **never promised**: the workspace registry's private `setState`, the session
+log's on-disk layout, and the `agents.release(id)` capability the optional host patch adds.
+After upgrading DSH, spend one minute on this:
+
+```sh
+cd /path/to/dsh-plugin-archive-shelf && npm test   # client 32 + host 98 checks: did the upgrade break a contract?
+```
+
+1. Restart, then open **Settings → Archive Shelf**: the list renders, the badges (running /
+   loaded / queued) are right, and no error banner appears;
+2. **Restore** one archived session you do not care about — it must return to its sidebar
+   position (this is the `setState` check);
+3. **Delete** one session you do not want — its directory goes away and no unopenable row is
+   left behind in the sidebar;
+4. Check whether loaded rows carry a **Release** button. If they do not, a DSH upgrade
+   dropped the host patch: re-apply it as described above, rebuild, and restart (until then
+   the feature degrades to queued deletion on its own).
+
+Failures are meant to be **loud**: when a private API is gone, a path no longer matches, or the
+session-list snapshot cannot be read, the plugin refuses and says why instead of guessing. If
+something does break, open an issue with the message the shelf showed plus your `npm test` output.
+
 ## How it works
 
 No build step: both halves are plain JavaScript and shipped as-is.
