@@ -63,11 +63,11 @@ check('browser half declares its client services',
   JSON.stringify(bundle.inject) === JSON.stringify(['slots', 'locale', 'sessions']), JSON.stringify(bundle.inject))
 
 let captured
-const clientContext = (onRegister) => ({
+const clientContext = (onRegister, sessions) => ({
   effect: (callback) => callback(),
   locale: { register: () => () => {}, bind: (ns) => (key) => `${ns}:${key}` },
   slots: { inject: (name, callback) => callback(), register: onRegister },
-  sessions: { refresh: async () => {} },
+  sessions: sessions ?? { refresh: async () => {} },
 })
 bundle.apply(clientContext((options, component) => { captured = { options, component } }))
 check('registers one settings section', captured !== undefined && captured.options.name === 'settings.section')
@@ -84,9 +84,13 @@ const rows = [
 ]
 let payload = { ok: true, rows, dangling: [] }
 const requests = []
+/** Payloads consumed in order before `payload` takes over — the host reports a
+ * sweep notice exactly once, so a fixed stub would loop the auto-cleanup. */
+let payloadSequence = []
 globalThis.fetch = async (_url, init) => {
   if (init !== undefined) requests.push(JSON.parse(init.body))
-  return { json: async () => payload }
+  const next = payloadSequence.length > 0 ? payloadSequence.shift() : payload
+  return { json: async () => next }
 }
 
 const props = {
@@ -236,6 +240,77 @@ walk(shelf, (node) => {
   if (node.type === 'div' && String(node.props.className ?? '').includes('asx-msg-ok')) notices.push(node.children?.[0])
 })
 check('a startup sweep reports what it deleted', notices.some(text => String(text).startsWith('swept')), notices.join('|'))
+
+
+// --- dropping an archive record is gated on the browser's own session list ----
+const coldRow = { id: 'c', title: 'cold', workspace: '', cwd: '/tmp', createdAt: 3, live: false, running: false, pending: false, onDisk: true, sizeBytes: 3 }
+const listStub = (byId) => ({ refresh: async () => {}, list: { getSnapshot: () => ({ byId }) } })
+const mounted = (sessions) => {
+  let component
+  bundle.apply(clientContext((_options, value) => { component = value }, sessions))
+  return component
+}
+/** Render, run the pending effects, and return the settled tree. */
+const settle = async (component) => {
+  cursor = 0
+  component(props)
+  const pending = effects
+  effects = []
+  for (const effect of pending) effect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  cursor = 0
+  return component(props)
+}
+
+/** Click delete on one row, then confirm it in the dialog. */
+const deleteRow = async (component, rowId) => {
+  const tree = await settle(component)
+  buttonOf(findRow(tree, rowId), 'remove').props.onClick()
+  cursor = 0
+  const dialog = component(props)
+  const confirm = []
+  walk(dialog, (node) => {
+    if (node.type === 'button' && String(node.props.className ?? '').includes('asx-btn-primary')) confirm.push(node)
+  })
+  await confirm[0].props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+}
+
+payload = { ok: true, rows: [coldRow], dangling: [], canRelease: false, pending: [] }
+requests.length = 0
+await deleteRow(mounted(listStub({})), 'c')
+check('a deleted session whose row left the list is forgotten',
+  requests.some(body => body.action === 'forget' && body.sessionId === 'c'), JSON.stringify(requests))
+
+payload = { ok: true, rows: [coldRow], dangling: [], canRelease: false, pending: [] }
+requests.length = 0
+await deleteRow(mounted(listStub({ c: { title: 'cold' } })), 'c')
+check('a deleted session still carried by the browser list keeps its archive record',
+  !requests.some(body => body.action === 'forget'), JSON.stringify(requests))
+
+payload = { ok: true, rows: [coldRow], dangling: [], canRelease: false, pending: [] }
+requests.length = 0
+const withoutSnapshot = mounted({ refresh: async () => {} })
+cursor = 0
+withoutSnapshot(props)
+await new Promise(resolve => setTimeout(resolve, 0))
+cursor = 0
+const settled = withoutSnapshot(props)
+check('an unreadable session list is never treated as an empty one',
+  !requests.some(body => body.action === 'forget'), JSON.stringify(requests))
+check('and the row still renders', findRow(settled, 'c') !== null)
+
+payload = { ok: true, rows: [], dangling: [], canRelease: false, pending: [] }
+payloadSequence = [{ ok: true, rows: [], dangling: ['z'], canRelease: false, pending: [], swept: { deleted: 1, ids: ['z'], at: 1 } }]
+requests.length = 0
+const sweptComponent = mounted(listStub({}))
+await settle(sweptComponent)
+await new Promise(resolve => setTimeout(resolve, 0))
+check('the boot sweep report is cleaned up once the row is gone from the list',
+  requests.some(body => body.action === 'forget' && body.sessionId === 'z'), JSON.stringify(requests))
 
 // --- host surface for the new actions ---------------------------------------
 const hostSource = read('lib/index.js')

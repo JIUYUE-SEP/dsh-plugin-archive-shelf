@@ -250,7 +250,13 @@ check(forgotten.json.ok === true && !forgotten.json.archivedSessionIds.includes(
 
 const orphan = await full.call({ action: 'delete', sessionId: orphanId, confirm: true })
 check(orphan.json.ok === true && orphan.json.cleanedOnly === true, 'header-only session is cleaned without a filesystem delete', JSON.stringify(orphan.json).slice(0, 120))
-check(!full.state.archivedSessionIds.includes(orphanId), 'cleaned-only session left the archive set')
+// The entry is kept even here: dropping it is what un-hides the session for a
+// browser whose list still carries it, so only the verified forget does that.
+check(full.state.archivedSessionIds.includes(orphanId), 'cleaned-only session keeps its archive entry for the browser')
+// The listing the host still carries (this id has no directory but stays listed)
+// makes forget refuse: the guard is what keeps an unopenable row out of the sidebar.
+check((await full.call({ action: 'forget', sessionId: orphanId })).json.error === 'session still exists',
+  'forget is refused while the host listing still carries the session')
 
 const traversal = await full.call({ action: 'delete', sessionId: traversalId, confirm: true })
 check(traversal.json.ok === true && traversal.json.cleanedOnly === true, 'a traversal-shaped id only cleans bookkeeping', JSON.stringify(traversal.json).slice(0, 100))
@@ -344,12 +350,20 @@ const restarted = await boot('full', { archived: queueArchived, withTimer: true 
 await fireBootSweep(restarted)
 const swept = (await restarted.call({ action: 'list' })).json
 check(swept.swept !== null && swept.swept.deleted === 1, 'the boot sweep deletes the queued session', JSON.stringify(swept.swept))
+check(Array.isArray(swept.swept.ids) && swept.swept.ids.includes(queuedId), 'the report names what it deleted', JSON.stringify(swept.swept.ids))
 check(!existsSync(join(queueProject, enc(queuedId))), 'the queued session directory is gone')
 check(!existsSync(queueProject), 'its now-empty project directory is gone too')
 check(swept.rows.every(r => r.id !== queuedId), 'the swept session left the archive rows')
+// The entry stays on purpose: it is what keeps the session out of the sidebar
+// while a browser may still hold it in a stale list.
+check(restarted.state.archivedSessionIds.includes(queuedId), 'the archive entry is kept for the browser to drop')
+check(swept.dangling.includes(queuedId), 'the swept session is reported as a dangling record')
 check(swept.pending.length === 0, 'the queue is empty after the sweep')
 check(JSON.parse(await readFile(restarted.queueFile, 'utf8')).pending.length === 0, 'the swept entry is persisted as removed')
 check((await restarted.call({ action: 'list' })).json.swept === null, 'the sweep notice is reported only once')
+// Only the verified forget (browser side) removes that entry.
+const sweptForget = await restarted.call({ action: 'forget', sessionId: queuedId })
+check(sweptForget.json.ok === true && !sweptForget.json.archivedSessionIds.includes(queuedId), 'the browser-side forget then drops the record')
 // A queued id the user restored is dropped, not deleted.
 await restarted.call({ action: 'queue', sessionId: runningId })
 await restarted.call({ action: 'unarchive', sessionId: runningId })
