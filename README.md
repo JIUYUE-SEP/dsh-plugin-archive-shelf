@@ -59,6 +59,27 @@ That host-side capability is **not in upstream DSH today**. To get it you either
 your own DSH (edit `packages/core/agent` in a source checkout, or `pnpm patch` an npm
 install) or wait for it to be accepted upstream.
 
+## Making the Release button appear (optional host patch)
+
+The patch ships with this repository: `patches/host-release.patch` — it touches only
+`packages/core/agent` (retain each agent handle's disposal capability and expose
+`release(id)`), plus a 161-line spec.
+
+```sh
+cd /path/to/deepseek-harness
+git apply /path/to/dsh-plugin-archive-shelf/patches/host-release.patch
+pnpm exec tsc -b packages/core/agent && pnpm --filter @deepseek-ai/dsh-agent exec tsdown
+# restart dsh: loaded rows in the shelf now carry a Release button
+```
+
+- **A DSH upgrade can drop the patch, and `git pull` may refuse to merge it.** On a
+  conflict, run `git checkout -- packages/core/agent` and apply it again; either way the
+  change needs a rebuild and a restart.
+- **An npm-installed DSH cannot use this patch as-is**: it holds compiled `lib/` files, so
+  the equivalent change goes through `pnpm patch @deepseek-ai/dsh-agent` — same semantics,
+  different landing site.
+- The way to make it universal is an upstream PR; the patch is written to be one.
+
 ## Requirements
 
 - DeepSeek Harness with a `web` profile. Developed and verified against `0.1.5-rc.2`.

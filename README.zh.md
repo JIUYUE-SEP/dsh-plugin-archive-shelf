@@ -45,6 +45,24 @@ DSH 的会话可以归档，但产品没有回程票：侧栏菜单只能把它�
 这份宿主侧能力目前**不在上游 DSH 里**。需要它就得给自己的 DSH 打补丁
 （源码装改 `packages/core/agent`，npm 装用 `pnpm patch`），或者等它被上游接受。
 
+## 让「释放」按钮出现（可选：给宿主打补丁）
+
+补丁随仓库提供：`patches/host-release.patch`（只动 `packages/core/agent` —— 保留 agent
+handle 的 dispose 能力，并加一个按 id 释放的 `release(id)`，外加一个 161 行的测试）。
+
+```sh
+cd /path/to/deepseek-harness
+git apply /path/to/dsh-plugin-archive-shelf/patches/host-release.patch
+pnpm exec tsc -b packages/core/agent && pnpm --filter @deepseek-ai/dsh-agent exec tsdown
+# 然后重启 dsh：归档架里常驻的行就会多出「释放」按钮
+```
+
+- **升级 DSH 之后补丁可能被冲掉，或被 `git pull` 拒绝。** 冲突时先
+  `git checkout -- packages/core/agent` 再 `git apply` 一次即可，改完必须重新构建并重启。
+- **npm 安装的 DSH 不能直接套用这份补丁**：那里拿到的是编译后的 `lib/`，需要用
+  `pnpm patch @deepseek-ai/dsh-agent` 做等价改动（改动语义相同，落点不同）。
+- 想让所有人默认用上，正确做法是把它提到上游 PR —— 补丁本身就是为这个准备的。
+
 ## 环境要求
 
 - 带 `web` profile 的 DeepSeek Harness。开发与验证版本：`0.1.5-rc.2`。

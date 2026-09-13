@@ -1,0 +1,272 @@
+diff --git a/packages/core/agent/src/index.ts b/packages/core/agent/src/index.ts
+index 21c95b5c60..6bc47d57fd 100644
+--- a/packages/core/agent/src/index.ts
++++ b/packages/core/agent/src/index.ts
+@@ -244,6 +244,13 @@ interface FactorySlot {
+  */
+ export class AgentRegistry extends Service {
+   private store = new Map<SessionId, AgentEntry>()
++  /**
++   * Disposal capabilities retained from the handles {@link create} and
++   * {@link resume} resolved, keyed by session id. An entry's capability lives
++   * exactly as long as its agent entry does; {@link release} claims it before
++   * awaiting its teardown.
++   */
++  private readonly handleDisposals = new Map<SessionId, () => Promise<void>>()
+   private factory: FactorySlot | undefined
+   private readonly initiators = new AsyncLocalStorage<Agent | undefined>()
+   private readonly initiatorRuns = new AsyncLocalStorage<InitiatorRun>()
+@@ -381,7 +388,8 @@ export class AgentRegistry extends Service {
+    * Distinct from {@link register} (which records an already-constructed
+    * agent): this constructs the agent and its session. Rejects if no factory is
+    * registered or creation/setup fails. The resolved {@link AgentHandle} lets
+-   * the owner tear down exactly this agent.
++   * the owner tear down exactly this agent, and the registry retains that same
++   * disposal capability so {@link release} can unload the agent by id.
+    * @param options - shared identity, optional live parent, session seed/metadata, and agent options.
+    * @returns the handle after setup, rollback-covered publication, and loop start complete.
+    */
+@@ -394,13 +402,17 @@ export class AgentRegistry extends Service {
+     const { target } = this.requireFactory()
+     const receiver = getTraceable(ownerCtx, target)
+     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+-    return Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
++    const handle: AgentHandle = await Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
++    this.retainHandle(handle)
++    return handle
+   }
+ 
+   /**
+    * Load a persisted session and resume an agent on it through the registered
+    * factory. Rejects if no factory is registered; the factory rejects if
+-   * session persistence is not configured or persistence/setup fails.
++   * session persistence is not configured or persistence/setup fails. As in
++   * {@link create}, the registry retains the resolved handle's disposal
++   * capability so {@link release} can unload the agent by id.
+    * @param options - persisted identity, optional live parent, configuration, and setup.
+    * @returns the handle after setup, rollback-covered publication, and loop start complete.
+    */
+@@ -409,7 +421,45 @@ export class AgentRegistry extends Service {
+     const { target } = this.requireFactory()
+     const receiver = getTraceable(ownerCtx, target)
+     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+-    return Reflect.apply(target.resume, receiver, [ownerCtx, options])
++    const handle: AgentHandle = await Reflect.apply(target.resume, receiver, [ownerCtx, options])
++    this.retainHandle(handle)
++    return handle
++  }
++
++  /**
++   * Unload exactly one live agent by releasing the disposal capability retained
++   * from its {@link create}/{@link resume} handle. Awaiting the returned Promise
++   * covers the complete teardown that handle's disposer performs: the loop
++   * stops and converges, and both the agent and its session leave their stores
++   * (`get(id)` and `ctx.sessions.get(id)` become undefined).
++   * The capability is claimed before that teardown starts, so a concurrent or
++   * repeated call cannot dispose the same agent twice. Detaching through any
++   * other route (the handle itself, owner fiber disposal, factory teardown)
++   * drops the capability with the agent entry.
++   * @param id - the shared agent/session id to unload.
++   * @returns true when this call released a retained capability; false when
++   *   nothing was retained — an unknown or already-released id, or an agent
++   *   entered through {@link register}, which has no handle.
++   * @throws when the retained disposal rejects. The capability stays claimed,
++   *   so a later call returns false instead of repeating the failure.
++   */
++  async release(id: SessionId): Promise<boolean> {
++    const dispose = this.handleDisposals.get(id)
++    if (dispose === undefined) return false
++    this.handleDisposals.delete(id)
++    await dispose()
++    return true
++  }
++
++  /**
++   * Retain a factory handle's disposal capability under its exact live entry.
++   * A handle that resolves after its entry detached retains nothing: that agent
++   * is already gone, and a same-id replacement must keep its own capability.
++   */
++  private retainHandle(handle: AgentHandle): void {
++    const entry = this.store.get(handle.agent.id)
++    if (entry?.agent !== handle.agent) return
++    this.handleDisposals.set(entry.id, () => handle.dispose())
+   }
+ 
+   /**
+@@ -500,6 +550,9 @@ export class AgentRegistry extends Service {
+     /* v8 ignore next -- enter() rejects replacement while this single-shot detach capability is live. */
+     if (this.store.get(entry.id) !== entry) return
+     this.store.delete(entry.id)
++    // The retained release capability dies with the entry; a later release(id)
++    // must report false instead of disposing an agent another route tore down.
++    this.handleDisposals.delete(entry.id)
+     // An insertion rolled back before announce was never externally created,
+     // so emitting disposed would invent an impossible lifecycle edge. Marking
+     // happens before the created emit: if a later created listener throws,
+diff --git a/packages/core/agent/tests/release.spec.ts b/packages/core/agent/tests/release.spec.ts
+new file mode 100644
+index 0000000000..c1766c8b48
+--- /dev/null
++++ b/packages/core/agent/tests/release.spec.ts
+@@ -0,0 +1,161 @@
++import { describe, expect, it } from 'vitest'
++import { Context } from '@deepseek-ai/cordis'
++import AgentRegistry from '@deepseek-ai/dsh-agent'
++import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
++
++import type { Agent, AgentFactory } from '@deepseek-ai/dsh-agent'
++import type { Session } from '@deepseek-ai/dsh-session'
++
++/** Minimal live Agent bound to a session the store already prepared. */
++function stubAgent(session: Session): Agent {
++  return {
++    id: session.id,
++    options: {},
++    session,
++    inbox: { nextTurn: [], nextStep: [] } as never,
++    status: 'idle',
++    ctx: new Context(),
++    send: () => {},
++    followup: () => {},
++    steer: () => ({ outcome: Promise.resolve({ status: 'rejected' as const }) }),
++    inject: () => {},
++    cancel() {},
++    runMaintenance: task => task(new AbortController().signal),
++    whenIdle: () => Promise.resolve(),
++  }
++}
++
++/**
++ * Factory stand-in for the loop: it publishes each agent and session through
++ * the real registries, and every returned handle removes exactly what it
++ * published in the loop's reverse teardown order (agent, then session).
++ * `disposals` records each handle disposal, so a second disposal of one agent
++ * cannot pass unnoticed.
++ */
++function stubFactory(ctx: Context, disposals: SessionId[]): AgentFactory {
++  const publish = (sessionId: SessionId, parentAgent: Agent | undefined) => {
++    const session = ctx.sessions.prepare(sessionId)
++    const agent = stubAgent(session)
++    const detachSession = ctx.sessions.enter(session)
++    const detachAgent = ctx.agents.enter(agent, parentAgent)
++    ctx.sessions.announce(session)
++    ctx.agents.announce(agent)
++    let disposing: Promise<void> | undefined
++    return {
++      agent,
++      dispose: (): Promise<void> => (disposing ??= (async () => {
++        // A real loop teardown is asynchronous; the hop keeps the store
++        // assertions after release() meaningful.
++        await Promise.resolve()
++        disposals.push(sessionId)
++        detachAgent()
++        detachSession()
++      })()),
++    }
++  }
++  return {
++    async createAgent(_ownerCtx, options) {
++      return publish(options.sessionId, options.parentAgent)
++    },
++    async resume(_ownerCtx, options) {
++      return publish(options.resumeSessionId, options.parentAgent)
++    },
++  }
++}
++
++/** Mount the real session store and agent registry with the loop stand-in. */
++async function mountAgentServices(): Promise<{ ctx: Context; disposals: SessionId[] }> {
++  const ctx = new Context()
++  await ctx.plugin(SessionStore)
++  await ctx.plugin(AgentRegistry)
++  const disposals: SessionId[] = []
++  ctx.agents.setFactory(stubFactory(ctx, disposals))
++  return { ctx, disposals }
++}
++
++describe('AgentRegistry.release', () => {
++  it('releases a created agent and empties both stores', async () => {
++    const { ctx, disposals } = await mountAgentServices()
++    const id = SessionId('release-created')
++
++    const handle = await ctx.agents.create({ sessionId: id })
++    expect(ctx.agents.get(id)).toBe(handle.agent)
++    expect(ctx.sessions.get(id)).toBe(handle.agent.session)
++
++    await expect(ctx.agents.release(id)).resolves.toBe(true)
++    expect(ctx.agents.get(id)).toBeUndefined()
++    expect(ctx.sessions.get(id)).toBeUndefined()
++    expect(disposals).toEqual([id])
++
++    await expect(ctx.agents.release(id)).resolves.toBe(false)
++    expect(disposals).toEqual([id])
++  })
++
++  it('releases a resumed agent and claims its capability for one concurrent caller', async () => {
++    const { ctx, disposals } = await mountAgentServices()
++    const id = SessionId('release-resumed')
++
++    const handle = await ctx.agents.resume({ resumeSessionId: id })
++    expect(ctx.agents.get(id)).toBe(handle.agent)
++
++    // release() claims the capability before awaiting its teardown, so the
++    // racing caller finds nothing retained instead of disposing twice.
++    await expect(Promise.all([ctx.agents.release(id), ctx.agents.release(id)]))
++      .resolves.toEqual([true, false])
++    expect(ctx.agents.get(id)).toBeUndefined()
++    expect(ctx.sessions.get(id)).toBeUndefined()
++    expect(disposals).toEqual([id])
++  })
++
++  it('reports false for an agent registered without a handle and for an unknown id', async () => {
++    const { ctx } = await mountAgentServices()
++    const id = SessionId('release-registered')
++    const detach = ctx.agents.register(stubAgent(ctx.sessions.prepare(id)))
++
++    await expect(ctx.agents.release(id)).resolves.toBe(false)
++    await expect(ctx.agents.release(SessionId('release-unknown'))).resolves.toBe(false)
++    expect(ctx.agents.get(id)).toBeDefined()
++
++    detach()
++    expect(ctx.agents.get(id)).toBeUndefined()
++  })
++
++  it('drops the retained capability when the handle disposes the agent first', async () => {
++    const { ctx, disposals } = await mountAgentServices()
++    const id = SessionId('release-other-route')
++
++    const handle = await ctx.agents.create({ sessionId: id })
++    await handle.dispose()
++    expect(ctx.agents.get(id)).toBeUndefined()
++
++    await expect(ctx.agents.release(id)).resolves.toBe(false)
++    expect(disposals).toEqual([id])
++  })
++
++  it('retains nothing when the handle resolves after its entry detached', async () => {
++    const ctx = new Context()
++    await ctx.plugin(SessionStore)
++    await ctx.plugin(AgentRegistry)
++    const id = SessionId('release-detached-first')
++    const session = ctx.sessions.prepare(id)
++    const agent = stubAgent(session)
++    const detachSession = ctx.sessions.enter(session)
++    const detachAgent = ctx.agents.enter(agent, undefined)
++    ctx.sessions.announce(session)
++    ctx.agents.announce(agent)
++    const disposals: SessionId[] = []
++    ctx.agents.setFactory({
++      async createAgent() {
++        detachAgent()
++        detachSession()
++        return { agent, dispose: () => { disposals.push(id); return Promise.resolve() } }
++      },
++      resume: () => Promise.reject(new Error('resume is not exercised by this spec')),
++    })
++
++    await ctx.agents.create({ sessionId: id })
++
++    await expect(ctx.agents.release(id)).resolves.toBe(false)
++    expect(disposals).toEqual([])
++  })
++})
