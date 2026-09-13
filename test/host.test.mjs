@@ -34,10 +34,17 @@ const gap = (label, detail = '') => {
 const enc = id => (id === '.' ? '~002E' : id === '..' ? '~002E~002E' : [...id].map(c =>
   c !== '~' && /^[A-Za-z0-9._-]$/.test(c) ? c : '~' + c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')).join(''))
 
-/** Fire the scheduled boot sweep and let its async work settle. */
+/**
+ * Fire the scheduled boot sweep and await the sweep itself. The callback
+ * returns the memoized drain promise, so this waits for real completion
+ * instead of counting timer ticks (which a slower machine outruns).
+ */
 const fireBootSweep = async (instance) => {
-  for (const timer of instance.timers) timer.callback()
-  for (let tick = 0; tick < 4; tick++) await new Promise(resolve => setTimeout(resolve, 0))
+  const started = instance.timers.map(timer => timer.callback())
+  await Promise.all(started.map(value => (value !== null && typeof value === 'object' && typeof value.then === 'function')
+    ? value
+    : Promise.resolve()))
+  await new Promise(resolve => setTimeout(resolve, 0))
 }
 
 const sandbox = await mkdtemp(join(tmpdir(), 'asx-host-'))
